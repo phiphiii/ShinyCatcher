@@ -8,7 +8,9 @@ import sys
 import json
 
 TEST_MODE = False
+TEST_IS_VIDEO = False
 TEST_IMAGE_PATH = 'testing_img/shiny_charmander.webp'
+TEST_VIDEO_PATH = 'testing_img/shiny_wild_ekans_ex.mp4'
 COUNTER_FILE = 'encounters.json'
 
 current_system = platform.system()
@@ -30,6 +32,7 @@ POPUP_ROI_W = 300
 POPUP_ROI_H = 250
 WHITE_PIXELS_THRESHOLD = 8000
 
+
 def load_counter():
     if os.path.exists(COUNTER_FILE):
         with open(COUNTER_FILE, 'r') as file_handler:
@@ -40,9 +43,11 @@ def load_counter():
                 return 0, 0
     return 0, 0
 
+
 def save_counter(encounters, shiny_found):
     with open(COUNTER_FILE, 'w') as file_handler:
         json.dump({'encounters': encounters, 'shiny_found': shiny_found}, file_handler)
+
 
 def detect_gift_shiny(frame):
     star_roi = frame[ROI_Y:ROI_Y + ROI_H, ROI_X:ROI_X + ROI_W]
@@ -53,6 +58,7 @@ def detect_gift_shiny(frame):
     yellow_pixels = cv2.countNonZero(mask_yellow)
     return yellow_pixels > 15, mask_yellow
 
+
 def detect_popup(frame):
     popup_roi = frame[POPUP_ROI_Y:POPUP_ROI_Y + POPUP_ROI_H, POPUP_ROI_X:POPUP_ROI_X + POPUP_ROI_W]
     hsv_popup = cv2.cvtColor(popup_roi, cv2.COLOR_BGR2HSV)
@@ -62,58 +68,53 @@ def detect_popup(frame):
     white_pixels = cv2.countNonZero(mask_white)
     return white_pixels > WHITE_PIXELS_THRESHOLD, white_pixels
 
+
+def detect_black_screen(frame):
+    roi = frame[300:780, 500:1420]
+    mean_val = np.mean(roi)
+    return mean_val < 20
+
+
+def detect_wild_shiny(frame):
+    roi = frame[0:500, 1000:1920]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lower_yellow = np.array([22, 150, 200])
+    upper_yellow = np.array([38, 255, 255])
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    return mask, cv2.countNonZero(mask)
+
+
 def active_sleep(seconds, capture_device, current_frame, state_name="WAITING", box_color=(0, 0, 255)):
     start_time = time.time()
     latest_frame = current_frame.copy() if current_frame is not None else np.zeros((1080, 1920, 3), dtype=np.uint8)
     while time.time() - start_time < seconds:
         disp_frame = latest_frame.copy()
-        if not TEST_MODE and capture_device:
+        if (not TEST_MODE or TEST_IS_VIDEO) and capture_device:
             is_read, frame = capture_device.read()
             if is_read:
+                frame = cv2.resize(frame, (1920, 1080))
                 disp_frame = frame.copy()
                 latest_frame = frame.copy()
+            elif TEST_IS_VIDEO:
+                capture_device.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         cv2.rectangle(disp_frame, (ROI_X, ROI_Y), (ROI_X + ROI_W, ROI_Y + ROI_H), box_color, 2)
         cv2.rectangle(disp_frame, (POPUP_ROI_X, POPUP_ROI_Y), (POPUP_ROI_X + POPUP_ROI_W, POPUP_ROI_Y + POPUP_ROI_H),
                       (255, 0, 0), 2)
-
         cv2.putText(disp_frame, f'Status: {state_name}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
         cv2.putText(disp_frame, f'Wait: {time.time() - start_time:.1f}s / {seconds:.1f}s', (30, 95),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
+
         resized = cv2.resize(disp_frame, (0, 0), fx=0.5, fy=0.5)
         cv2.imshow('Nintendo Stream', resized)
         cv2.waitKey(10)
     return latest_frame
 
-def start_hunting():
-    cv2.namedWindow('Nintendo Stream')
-    encounters, shiny_found = load_counter()
 
-    try:
-        esp = serial.Serial(PORT_COM, 115200, timeout=0.1, write_timeout=0)
-        time.sleep(6)
-        if esp and not TEST_MODE:
-            esp.write(b'F')
-            time.sleep(0.5)
-    except Exception as e:
-        print(f"BLAD PORTU: {e}")
-        esp = None
-
-    capture_device = None
-    if not TEST_MODE:
-        if current_system == "Windows":
-            capture_device = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        else:
-            capture_device = cv2.VideoCapture(0)
-
-        capture_device.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        capture_device.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        capture_device.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-
+def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
     state = "RESETTING"
     last_action_time = time.time()
     mask = np.zeros((ROI_H, ROI_W), dtype=np.uint8)
-
     checking_phase_start = 0
     yes_no_count = 0
     post_nickname_timer = 0
@@ -127,8 +128,10 @@ def start_hunting():
             is_frame_read, current_frame = capture_device.read()
             if not is_frame_read:
                 break
+            current_frame = cv2.resize(current_frame, (1920, 1080))
         else:
             if not os.path.exists(TEST_IMAGE_PATH):
+                print(f"\n[ERROR] Test image not found: {TEST_IMAGE_PATH}")
                 break
             current_frame = cv2.imread(TEST_IMAGE_PATH)
             current_frame = cv2.resize(current_frame, (1920, 1080))
@@ -237,7 +240,6 @@ def start_hunting():
 
         if state != "RESETTING" and "MENU" not in state:
             cv2.rectangle(current_frame, (ROI_X, ROI_Y), (ROI_X + ROI_W, ROI_Y + ROI_H), roi_color, 2)
-
             if state == "MASHING_A":
                 cv2.rectangle(current_frame, (POPUP_ROI_X, POPUP_ROI_Y),
                               (POPUP_ROI_X + POPUP_ROI_W, POPUP_ROI_Y + POPUP_ROI_H), (255, 0, 0), 2)
@@ -245,7 +247,6 @@ def start_hunting():
                             (255, 100, 255), 2)
                 cv2.putText(current_frame, f'Popups: {yes_no_count}/2', (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                             (100, 255, 100), 2)
-
             cv2.putText(current_frame, f'Status: {state}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
             cv2.putText(current_frame, f'Encounters: {encounters}', (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                         (0, 255, 255), 2)
@@ -259,6 +260,160 @@ def start_hunting():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+
+def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
+    state = "SPINNING"
+    yellow_history = []
+    phase_start_time = time.time()
+    mask = np.zeros((500, 920), dtype=np.uint8)
+    delta = 0
+
+    while True:
+        if TEST_MODE:
+            is_frame_read, current_frame = capture_device.read()
+            if not is_frame_read:
+                capture_device.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                is_frame_read, current_frame = capture_device.read()
+                if not is_frame_read:
+                    print("\n[ERROR] Cannot read frames from video file!")
+                    break
+            current_frame = cv2.resize(current_frame, (1920, 1080))
+            time.sleep(0.03)
+        else:
+            is_frame_read, current_frame = capture_device.read()
+            if not is_frame_read:
+                break
+            current_frame = cv2.resize(current_frame, (1920, 1080))
+
+        current_time = time.time()
+        roi_color = (0, 0, 255)
+        disp_frame = current_frame.copy()
+
+        if state == "SPINNING":
+            roi_color = (0, 0, 255)
+            if esp and not TEST_MODE:
+                esp.write(b'w')
+                time.sleep(0.1)
+                esp.write(b's')
+                time.sleep(0.1)
+
+            if detect_black_screen(current_frame):
+                state = "CHECKING_WILD_SHINY"
+                phase_start_time = current_time
+                yellow_history.clear()
+                delta = 0
+                if not TEST_MODE:
+                    encounters += 1
+                    save_counter(encounters, shiny_found)
+
+        elif state == "CHECKING_WILD_SHINY":
+            roi_color = (0, 255, 0)
+            mask, yellow_count = detect_wild_shiny(current_frame)
+            time_in_battle = current_time - phase_start_time
+
+            if time_in_battle < 1.5:
+                cv2.putText(disp_frame, 'WAITING FOR SLIDE-IN...', (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                            (0, 165, 255), 2)
+            else:
+                yellow_history.append(yellow_count)
+                if len(yellow_history) > 15:
+                    yellow_history.pop(0)
+
+                if len(yellow_history) >= 5:
+                    delta = yellow_count - min(yellow_history)
+                    if delta > 300:
+                        state = "SHINY_FOUND"
+                        if not TEST_MODE:
+                            shiny_found += 1
+                            save_counter(encounters, shiny_found)
+
+            if time_in_battle > 7.0:
+                state = "ESCAPING"
+
+        elif state == "ESCAPING":
+            roi_color = (255, 100, 0)
+            if esp and not TEST_MODE:
+                esp.write(b's')
+                current_frame = active_sleep(0.5, capture_device, current_frame, "ESCAPE_DOWN", roi_color)
+                esp.write(b'd')
+                current_frame = active_sleep(0.5, capture_device, current_frame, "ESCAPE_RIGHT", roi_color)
+                esp.write(b'A')
+                current_frame = active_sleep(3.0, capture_device, current_frame, "ESCAPE_WAIT", roi_color)
+            state = "SPINNING"
+
+        elif state == "SHINY_FOUND":
+            if esp:
+                esp.write(b'Q')
+            state = "STOPPED"
+
+        elif state == "STOPPED":
+            roi_color = (0, 255, 0)
+            cv2.putText(disp_frame, 'SHINY_DETECTED_ALARM_ON', (50, 280), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+
+        cv2.rectangle(disp_frame, (1000, 0), (1920, 500), roi_color, 2)
+
+        cv2.putText(disp_frame, f'Status: {state}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+        cv2.putText(disp_frame, f'Encounters: {encounters}', (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
+        cv2.putText(disp_frame, f'Shiny Found: {shiny_found}', (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 215, 255),
+                    2)
+
+        if state == "CHECKING_WILD_SHINY":
+            cv2.putText(disp_frame, f'Delta: {delta} / 300', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 100, 255),
+                        2)
+
+        resized_frame = cv2.resize(disp_frame, (0, 0), fx=0.5, fy=0.5)
+        cv2.imshow('Nintendo Stream', resized_frame)
+
+        mask_resized = cv2.resize(mask, (0, 0), fx=1.0, fy=1.0)
+        cv2.imshow('Yellow Mask', mask_resized)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+
+def start_hunting(hunting_mode="GIFT"):
+    global TEST_IS_VIDEO
+
+    if hunting_mode == "WILD" and TEST_MODE:
+        TEST_IS_VIDEO = True
+        if not os.path.exists(TEST_VIDEO_PATH):
+            print(f"\n[ERROR] Video file not found: {TEST_VIDEO_PATH}")
+            print("Make sure the file is in the same folder as ShinyCatcher.py!")
+            return
+    else:
+        TEST_IS_VIDEO = False
+
+    cv2.namedWindow('Nintendo Stream')
+    encounters, shiny_found = load_counter()
+
+    try:
+        esp = serial.Serial(PORT_COM, 115200, timeout=0.1, write_timeout=0)
+        time.sleep(6)
+        if esp and not TEST_MODE:
+            esp.write(b'F')
+            time.sleep(0.5)
+    except Exception as e:
+        print(f"PORT ERROR: {e}")
+        esp = None
+
+    capture_device = None
+    if not TEST_MODE:
+        if current_system == "Windows":
+            capture_device = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        else:
+            capture_device = cv2.VideoCapture(0)
+        capture_device.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        capture_device.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        capture_device.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    else:
+        if hunting_mode == "WILD":
+            capture_device = cv2.VideoCapture(TEST_VIDEO_PATH)
+
+    if hunting_mode == "GIFT":
+        gift_hunting_loop(capture_device, esp, encounters, shiny_found)
+    elif hunting_mode == "WILD":
+        wild_hunting_loop(capture_device, esp, encounters, shiny_found)
+
     if capture_device:
         capture_device.release()
     if esp:
@@ -269,18 +424,28 @@ def start_hunting():
     cv2.destroyAllWindows()
     cv2.waitKey(1)
 
+
 def main():
     global TEST_MODE
     while True:
-        choice = input("1. Start Gift Hunting\n2. Start Test Mode\n3. Exit\nChoose: ")
-        if choice == '1':
-            TEST_MODE = False
-            start_hunting()
+        status_text = "On" if TEST_MODE else "Off"
+        print("\n-=- Welcome to Shiny Catcher by phiphi -=-")
+        print(f"[TEST MODE - {status_text}] - type \"test\"")
+        print("1. Start Gift Hunting")
+        print("2. Start Wild Hunting (Grass/Water)")
+        print("3. Exit")
+
+        choice = input("Choose: ").strip().lower()
+
+        if choice == 'test':
+            TEST_MODE = not TEST_MODE
+        elif choice == '1':
+            start_hunting("GIFT")
         elif choice == '2':
-            TEST_MODE = True
-            start_hunting()
-        elif choice == '3':
+            start_hunting("WILD")
+        elif choice == '3' or choice == 'exit':
             sys.exit()
+
 
 if __name__ == "__main__":
     main()
