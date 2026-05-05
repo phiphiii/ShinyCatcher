@@ -209,22 +209,24 @@ def start_hunting():
         elif state == "CHECKING_SHINY":
             if checking_phase_start == 0:
                 checking_phase_start = current_time
-                encounters += 1
-                save_counter(encounters, shiny_found)
+                if not TEST_MODE:
+                    encounters += 1
+                    save_counter(encounters, shiny_found)
             roi_color = (0, 255, 0)
             is_shiny, mask_yellow = detect_gift_shiny(current_frame)
             mask = mask_yellow
             if is_shiny:
                 state = "SHINY_FOUND"
-                shiny_found += 1
-                save_counter(encounters, shiny_found)
+                if not TEST_MODE:
+                    shiny_found += 1
+                    save_counter(encounters, shiny_found)
                 checking_phase_start = 0
             elif current_time - checking_phase_start > 3.0:
                 state = "RESETTING"
                 checking_phase_start = 0
 
         elif state == "SHINY_FOUND":
-            if esp and not TEST_MODE:
+            if esp:
                 esp.write(b'Q')
             state = "STOPPED"
 
