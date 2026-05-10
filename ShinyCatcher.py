@@ -32,6 +32,12 @@ POPUP_ROI_W = 300
 POPUP_ROI_H = 250
 WHITE_PIXELS_THRESHOLD = 8000
 
+BITE_ROI_X = 600
+BITE_ROI_Y = 850
+BITE_ROI_W = 700
+BITE_ROI_H = 150
+BITE_PIXELS_THRESHOLD = 3000
+
 
 def load_counter():
     if os.path.exists(COUNTER_FILE):
@@ -69,17 +75,38 @@ def detect_popup(frame):
     return white_pixels > WHITE_PIXELS_THRESHOLD, white_pixels
 
 
+def detect_bite(frame):
+    bite_roi = frame[BITE_ROI_Y:BITE_ROI_Y + BITE_ROI_H, BITE_ROI_X:BITE_ROI_X + BITE_ROI_W]
+    hsv_bite = cv2.cvtColor(bite_roi, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([0, 0, 200])
+    upper_white = np.array([180, 40, 255])
+    mask_white = cv2.inRange(hsv_bite, lower_white, upper_white)
+    white_pixels = cv2.countNonZero(mask_white)
+    return white_pixels > BITE_PIXELS_THRESHOLD, white_pixels
+
+
 def detect_black_screen(frame):
     roi = frame[300:780, 500:1420]
     mean_val = np.mean(roi)
-    return mean_val < 20
+    # ZWIĘKSZONA TOLERANCJA: kompresja wideo często podbija czerń powyżej 20
+    return mean_val < 45
 
 
 def detect_wild_shiny(frame):
     roi = frame[0:500, 1000:1920]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    lower_yellow = np.array([22, 150, 200])
-    upper_yellow = np.array([38, 255, 255])
+    # RYGORSTYCZNY FILTR: Ignoruje blade zółcie (np. Meowtha)
+    lower_yellow = np.array([30, 160, 200])
+    upper_yellow = np.array([40, 255, 255])
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    return mask, cv2.countNonZero(mask)
+
+
+def detect_fishing_shiny(frame):
+    roi = frame[0:500, 1000:1920]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lower_yellow = np.array([30, 170, 200])
+    upper_yellow = np.array([40, 255, 255])
     mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
     return mask, cv2.countNonZero(mask)
 
@@ -131,7 +158,6 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
             current_frame = cv2.resize(current_frame, (1920, 1080))
         else:
             if not os.path.exists(TEST_IMAGE_PATH):
-                print(f"\n[ERROR] Test image not found: {TEST_IMAGE_PATH}")
                 break
             current_frame = cv2.imread(TEST_IMAGE_PATH)
             current_frame = cv2.resize(current_frame, (1920, 1080))
@@ -142,19 +168,15 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
 
         if state == "MASHING_A":
             is_yes_no_visible = False
-
             if current_time - phase_start_time > 10.0:
                 is_yes_no_visible, white_px_count = detect_popup(current_frame)
-
             if is_yes_no_visible and current_time - last_popup_time > 3.0:
                 if yes_no_count == 0:
-                    if esp and not TEST_MODE:
-                        esp.write(b'A')
+                    if esp and not TEST_MODE: esp.write(b'A')
                     yes_no_count += 1
                     last_popup_time = current_time
                     last_action_time = current_time
                     fail_safe_timer = current_time
-
                 elif yes_no_count == 1:
                     if esp and not TEST_MODE:
                         esp.write(b'd')
@@ -164,13 +186,10 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
                     last_popup_time = current_time
                     last_action_time = current_time
                     post_nickname_timer = current_time
-
             elif current_time - last_action_time > 0.6:
                 if current_time - last_popup_time > 1.5:
-                    if esp and not TEST_MODE:
-                        esp.write(b'A')
+                    if esp and not TEST_MODE: esp.write(b'A')
                     last_action_time = current_time
-
             if yes_no_count == 2 and current_time - post_nickname_timer > 6.0:
                 if esp and not TEST_MODE:
                     esp.write(b'C')
@@ -184,7 +203,6 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
                     esp.write(b'A')
                     current_frame = active_sleep(3.0, capture_device, current_frame, "MENU_SUMMARY", (0, 255, 0))
                 state = "CHECKING_SHINY"
-
             if current_time - fail_safe_timer > 75.0:
                 state = "RESETTING"
 
@@ -229,8 +247,7 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
                 checking_phase_start = 0
 
         elif state == "SHINY_FOUND":
-            if esp:
-                esp.write(b'Q')
+            if esp: esp.write(b'Q')
             state = "STOPPED"
 
         elif state == "STOPPED":
@@ -240,23 +257,14 @@ def gift_hunting_loop(capture_device, esp, encounters, shiny_found):
 
         if state != "RESETTING" and "MENU" not in state:
             cv2.rectangle(current_frame, (ROI_X, ROI_Y), (ROI_X + ROI_W, ROI_Y + ROI_H), roi_color, 2)
-            if state == "MASHING_A":
-                cv2.rectangle(current_frame, (POPUP_ROI_X, POPUP_ROI_Y),
-                              (POPUP_ROI_X + POPUP_ROI_W, POPUP_ROI_Y + POPUP_ROI_H), (255, 0, 0), 2)
-                cv2.putText(current_frame, f'White Px: {white_px_count}', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
-                            (255, 100, 255), 2)
-                cv2.putText(current_frame, f'Popups: {yes_no_count}/2', (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
-                            (100, 255, 100), 2)
             cv2.putText(current_frame, f'Status: {state}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
             cv2.putText(current_frame, f'Encounters: {encounters}', (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                         (0, 255, 255), 2)
             cv2.putText(current_frame, f'Shiny Found: {shiny_found}', (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                         (0, 215, 255), 2)
-
             resized_frame = cv2.resize(current_frame, (0, 0), fx=0.5, fy=0.5)
             cv2.imshow('Nintendo Stream', resized_frame)
             cv2.imshow('Yellow Mask', mask)
-
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -267,6 +275,127 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
     phase_start_time = time.time()
     mask = np.zeros((500, 920), dtype=np.uint8)
     delta = 0
+
+    while True:
+        if TEST_MODE:
+            is_frame_read, current_frame = capture_device.read()
+            if not is_frame_read:
+                capture_device.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                is_frame_read, current_frame = capture_device.read()
+                if not is_frame_read: break
+            current_frame = cv2.resize(current_frame, (1920, 1080))
+            time.sleep(0.03)
+        else:
+            is_frame_read, current_frame = capture_device.read()
+            if not is_frame_read: break
+            current_frame = cv2.resize(current_frame, (1920, 1080))
+
+        current_time = time.time()
+        roi_color = (0, 0, 255)
+        disp_frame = current_frame.copy()
+
+        if state == "SPINNING":
+            roi_color = (0, 0, 255)
+            if esp and not TEST_MODE:
+                current_frame = active_sleep(0.35, capture_device, current_frame, "SPINNING", roi_color)
+                # TAPOWANIE: Używamy małych liter (tapRigid) by postać tylko obracała się w miejscu
+                esp.write(b'l')
+                esp.write(b'u')
+                esp.write(b'r')
+                esp.write(b'd')
+
+            if detect_black_screen(current_frame):
+                state = "CHECKING_WILD_SHINY"
+                phase_start_time = current_time
+                yellow_history.clear()
+                delta = 0
+                if not TEST_MODE:
+                    encounters += 1
+                    save_counter(encounters, shiny_found)
+
+        elif state == "CHECKING_WILD_SHINY":
+            roi_color = (0, 255, 0)
+            mask, yellow_count = detect_wild_shiny(current_frame)
+            time_in_battle = current_time - phase_start_time
+
+            if time_in_battle < 1.5:
+                cv2.putText(disp_frame, 'WAITING FOR SLIDE-IN...', (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                            (0, 165, 255), 2)
+            else:
+                yellow_history.append(yellow_count)
+                if len(yellow_history) > 15: yellow_history.pop(0)
+                if len(yellow_history) >= 5:
+                    delta = yellow_count - min(yellow_history)
+                    # Limit to 800 - Meowth nas nie oszuka
+                    if delta > 800:
+                        state = "SHINY_FOUND"
+                        if not TEST_MODE:
+                            shiny_found += 1
+                            save_counter(encounters, shiny_found)
+
+            if time_in_battle > 6.0:
+                state = "ESCAPING"
+                esp.write(b'A')
+
+        elif state == "ESCAPING":
+
+            current_frame = active_sleep(2.8, capture_device, current_frame, "THROWING_POKEMON", roi_color)
+            roi_color = (255, 100, 0)
+            if esp and not TEST_MODE:
+                current_frame = active_sleep(1, capture_device, current_frame, "ESCAPING", roi_color)
+                esp.write(b'r')
+                esp.write(b'd')
+                esp.write(b'A')
+                current_frame = active_sleep(1, capture_device, current_frame, "KOCHAM_ALE", roi_color)
+                esp.write(b'A')
+                # Czekamy na animację ucieczki i załadowanie mapy
+                current_frame = active_sleep(2, capture_device, current_frame, "ESCAPE_WAIT", roi_color)
+
+            state = "SPINNING"
+
+        elif state == "SHINY_FOUND":
+            if esp: esp.write(b'Q')
+            state = "STOPPED"
+
+        elif state == "STOPPED":
+            roi_color = (0, 255, 0)
+            cv2.putText(disp_frame, 'SHINY_DETECTED_ALARM_ON', (50, 280), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+
+        cv2.rectangle(disp_frame, (1000, 0), (1920, 500), roi_color, 2)
+        cv2.putText(disp_frame, f'Status: {state}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+        cv2.putText(disp_frame, f'Encounters: {encounters}', (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
+        cv2.putText(disp_frame, f'Shiny Found: {shiny_found}', (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 215, 255),
+                    2)
+
+        # UI dla ułatwienia kalibracji czarnego ekranu i szukania shiny
+        if state == "SPINNING":
+            roi_black = current_frame[300:780, 500:1420]
+            mean_black = np.mean(roi_black)
+            cv2.putText(disp_frame, f'Blackness: {mean_black:.1f} / 45', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                        (100, 255, 255), 2)
+        elif state == "CHECKING_WILD_SHINY":
+            cv2.putText(disp_frame, f'Delta: {delta} / 800', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 100, 255),
+                        2)
+
+        resized_frame = cv2.resize(disp_frame, (0, 0), fx=0.5, fy=0.5)
+        cv2.imshow('Nintendo Stream', resized_frame)
+        mask_resized = cv2.resize(mask, (0, 0), fx=1.0, fy=1.0)
+        cv2.imshow('Yellow Mask', mask_resized)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+
+def fish_hunting_loop(capture_device, esp, encounters, shiny_found):
+    state = "CASTING_ROD"
+    yellow_history = []
+    phase_start_time = time.time()
+    mask = np.zeros((500, 920), dtype=np.uint8)
+    delta = 0
+    bite_timer = time.time()
+    white_px_count = 0
+
+    is_first_cast = True
+    last_text_interaction = 0
 
     while True:
         if TEST_MODE:
@@ -289,13 +418,44 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
         roi_color = (0, 0, 255)
         disp_frame = current_frame.copy()
 
-        if state == "SPINNING":
+        if state == "CASTING_ROD":
             roi_color = (0, 0, 255)
+
             if esp and not TEST_MODE:
-                esp.write(b'w')
-                time.sleep(0.1)
-                esp.write(b's')
-                time.sleep(0.1)
+                if is_first_cast:
+                    esp.write(b'S')
+                    current_frame = active_sleep(1.2, capture_device, current_frame, "MENU_OPEN", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(1.0, capture_device, current_frame, "BAG_OPEN", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(0.6, capture_device, current_frame, "SELECT_ROD", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(3.5, capture_device, current_frame, "CASTING", roi_color)
+
+                    is_first_cast = False
+                else:
+                    esp.write(b'S')
+                    current_frame = active_sleep(0.8, capture_device, current_frame, "MENU_OPEN", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(0.8, capture_device, current_frame, "BAG_OPEN", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(0.6, capture_device, current_frame, "SELECT_ROD", roi_color)
+                    esp.write(b'A')
+                    current_frame = active_sleep(3.5, capture_device, current_frame, "CASTING", roi_color)
+
+            state = "WAITING_FOR_BITE"
+            bite_timer = time.time()
+            last_text_interaction = 0
+
+        elif state == "WAITING_FOR_BITE":
+            roi_color = (255, 255, 0)
+            is_text_visible, white_px_count = detect_bite(current_frame)
+
+            if is_text_visible:
+                if current_time - last_text_interaction > 0.4:
+                    if esp and not TEST_MODE:
+                        esp.write(b'A')
+                    last_text_interaction = current_time
 
             if detect_black_screen(current_frame):
                 state = "CHECKING_WILD_SHINY"
@@ -306,9 +466,13 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
                     encounters += 1
                     save_counter(encounters, shiny_found)
 
+            elif current_time - bite_timer > 15.0 or (
+                    last_text_interaction > 0 and current_time - last_text_interaction > 3.5):
+                state = "CASTING_ROD"
+
         elif state == "CHECKING_WILD_SHINY":
             roi_color = (0, 255, 0)
-            mask, yellow_count = detect_wild_shiny(current_frame)
+            mask, yellow_count = detect_fishing_shiny(current_frame)
             time_in_battle = current_time - phase_start_time
 
             if time_in_battle < 1.5:
@@ -321,7 +485,7 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
 
                 if len(yellow_history) >= 5:
                     delta = yellow_count - min(yellow_history)
-                    if delta > 300:
+                    if delta > 800:
                         state = "SHINY_FOUND"
                         if not TEST_MODE:
                             shiny_found += 1
@@ -333,13 +497,13 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
         elif state == "ESCAPING":
             roi_color = (255, 100, 0)
             if esp and not TEST_MODE:
-                esp.write(b's')
-                current_frame = active_sleep(0.5, capture_device, current_frame, "ESCAPE_DOWN", roi_color)
-                esp.write(b'd')
+                esp.write(b'r')
                 current_frame = active_sleep(0.5, capture_device, current_frame, "ESCAPE_RIGHT", roi_color)
+                esp.write(b'd')
+                current_frame = active_sleep(0.5, capture_device, current_frame, "ESCAPE_DOWN", roi_color)
                 esp.write(b'A')
-                current_frame = active_sleep(3.0, capture_device, current_frame, "ESCAPE_WAIT", roi_color)
-            state = "SPINNING"
+                current_frame = active_sleep(4.0, capture_device, current_frame, "ESCAPE_WAIT", roi_color)
+            state = "CASTING_ROD"
 
         elif state == "SHINY_FOUND":
             if esp:
@@ -351,6 +515,11 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
             cv2.putText(disp_frame, 'SHINY_DETECTED_ALARM_ON', (50, 280), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
 
         cv2.rectangle(disp_frame, (1000, 0), (1920, 500), roi_color, 2)
+        if state == "WAITING_FOR_BITE":
+            cv2.rectangle(disp_frame, (BITE_ROI_X, BITE_ROI_Y), (BITE_ROI_X + BITE_ROI_W, BITE_ROI_Y + BITE_ROI_H),
+                          (255, 0, 0), 2)
+            cv2.putText(disp_frame, f'Bite Px: {white_px_count}', (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
+                        (255, 100, 255), 2)
 
         cv2.putText(disp_frame, f'Status: {state}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
         cv2.putText(disp_frame, f'Encounters: {encounters}', (30, 95), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
@@ -358,12 +527,11 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
                     2)
 
         if state == "CHECKING_WILD_SHINY":
-            cv2.putText(disp_frame, f'Delta: {delta} / 300', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 100, 255),
+            cv2.putText(disp_frame, f'Delta: {delta} / 800', (30, 185), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 100, 255),
                         2)
 
         resized_frame = cv2.resize(disp_frame, (0, 0), fx=0.5, fy=0.5)
         cv2.imshow('Nintendo Stream', resized_frame)
-
         mask_resized = cv2.resize(mask, (0, 0), fx=1.0, fy=1.0)
         cv2.imshow('Yellow Mask', mask_resized)
 
@@ -374,7 +542,7 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
 def start_hunting(hunting_mode="GIFT"):
     global TEST_IS_VIDEO
 
-    if hunting_mode == "WILD" and TEST_MODE:
+    if (hunting_mode == "WILD" or hunting_mode == "FISH") and TEST_MODE:
         TEST_IS_VIDEO = True
         if not os.path.exists(TEST_VIDEO_PATH):
             print(f"\n[ERROR] Video file not found: {TEST_VIDEO_PATH}")
@@ -406,13 +574,15 @@ def start_hunting(hunting_mode="GIFT"):
         capture_device.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         capture_device.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     else:
-        if hunting_mode == "WILD":
+        if hunting_mode in ["WILD", "FISH"]:
             capture_device = cv2.VideoCapture(TEST_VIDEO_PATH)
 
     if hunting_mode == "GIFT":
         gift_hunting_loop(capture_device, esp, encounters, shiny_found)
     elif hunting_mode == "WILD":
         wild_hunting_loop(capture_device, esp, encounters, shiny_found)
+    elif hunting_mode == "FISH":
+        fish_hunting_loop(capture_device, esp, encounters, shiny_found)
 
     if capture_device:
         capture_device.release()
@@ -433,7 +603,8 @@ def main():
         print(f"[TEST MODE - {status_text}] - type \"test\"")
         print("1. Start Gift Hunting")
         print("2. Start Wild Hunting (Grass/Water)")
-        print("3. Exit")
+        print("3. Start Fish Hunting (Rod)")
+        print("4. Exit")
 
         choice = input("Choose: ").strip().lower()
 
@@ -443,7 +614,9 @@ def main():
             start_hunting("GIFT")
         elif choice == '2':
             start_hunting("WILD")
-        elif choice == '3' or choice == 'exit':
+        elif choice == '3':
+            start_hunting("FISH")
+        elif choice == '4' or choice == 'exit':
             sys.exit()
 
 
