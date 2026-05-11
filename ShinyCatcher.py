@@ -6,6 +6,8 @@ import os
 import serial
 import sys
 import json
+import threading
+import queue
 
 TEST_MODE = False
 TEST_IS_VIDEO = False
@@ -111,9 +113,10 @@ def detect_fishing_shiny(frame):
     return mask, cv2.countNonZero(mask)
 
 
-def active_sleep(seconds, capture_device, current_frame, state_name="WAITING", box_color=(0, 0, 255)):
+def active_sleep(seconds, capture_device, current_frame, state_name="WAITING", box_color=(0, 0, 255),break_on_black=False, mode="NONE"):
     start_time = time.time()
     latest_frame = current_frame.copy() if current_frame is not None else np.zeros((1080, 1920, 3), dtype=np.uint8)
+
     while time.time() - start_time < seconds:
         disp_frame = latest_frame.copy()
         if (not TEST_MODE or TEST_IS_VIDEO) and capture_device:
@@ -125,9 +128,24 @@ def active_sleep(seconds, capture_device, current_frame, state_name="WAITING", b
             elif TEST_IS_VIDEO:
                 capture_device.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-        cv2.rectangle(disp_frame, (ROI_X, ROI_Y), (ROI_X + ROI_W, ROI_Y + ROI_H), box_color, 2)
-        cv2.rectangle(disp_frame, (POPUP_ROI_X, POPUP_ROI_Y), (POPUP_ROI_X + POPUP_ROI_W, POPUP_ROI_Y + POPUP_ROI_H),
-                      (255, 0, 0), 2)
+        # Ninja Reflex: Interrupt sleep immediately if black screen is detected
+        if break_on_black and detect_black_screen(latest_frame):
+            break
+
+        # Draw specific bounding boxes based on the active hunting mode
+        if mode == "GIFT":
+            cv2.rectangle(disp_frame, (ROI_X, ROI_Y), (ROI_X + ROI_W, ROI_Y + ROI_H), box_color, 2)
+            cv2.rectangle(disp_frame, (POPUP_ROI_X, POPUP_ROI_Y),
+                          (POPUP_ROI_X + POPUP_ROI_W, POPUP_ROI_Y + POPUP_ROI_H), (255, 0, 0), 2)
+        elif mode == "WILD":
+            # Show only the wild encounter scanning area
+            cv2.rectangle(disp_frame, (1000, 0), (1920, 500), box_color, 2)
+        elif mode == "FISH":
+            cv2.rectangle(disp_frame, (1000, 0), (1920, 500), box_color, 2)
+            if state_name == "WAITING_FOR_BITE":
+                cv2.rectangle(disp_frame, (BITE_ROI_X, BITE_ROI_Y), (BITE_ROI_X + BITE_ROI_W, BITE_ROI_Y + BITE_ROI_H),
+                              (255, 0, 0), 2)
+
         cv2.putText(disp_frame, f'Status: {state_name}', (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 2)
         cv2.putText(disp_frame, f'Wait: {time.time() - start_time:.1f}s / {seconds:.1f}s', (30, 95),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2)
@@ -297,12 +315,14 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
         if state == "SPINNING":
             roi_color = (0, 0, 255)
             if esp and not TEST_MODE:
-                current_frame = active_sleep(0.35, capture_device, current_frame, "SPINNING", roi_color)
-                # TAPOWANIE: Używamy małych liter (tapRigid) by postać tylko obracała się w miejscu
+                # TAPPING: Use lowercase to turn in place. break_on_black allows immediate battle detection.
                 esp.write(b'l')
-                esp.write(b'u')
-                esp.write(b'r')
-                esp.write(b'd')
+                current_frame = active_sleep(0.2, capture_device, current_frame, "TAP_LEFT", roi_color,break_on_black=True, mode="WILD")
+
+                # Turn right only if a battle hasn't started yet
+                if not detect_black_screen(current_frame):
+                    esp.write(b'r')
+                    current_frame = active_sleep(0.2, capture_device, current_frame, "TAP_RIGHT", roi_color,break_on_black=True, mode="WILD")
 
             if detect_black_screen(current_frame):
                 state = "CHECKING_WILD_SHINY"
@@ -337,20 +357,18 @@ def wild_hunting_loop(capture_device, esp, encounters, shiny_found):
                 state = "ESCAPING"
                 esp.write(b'A')
 
-        elif state == "ESCAPING":
 
-            current_frame = active_sleep(2.8, capture_device, current_frame, "THROWING_POKEMON", roi_color)
+        elif state == "ESCAPING":
+            current_frame = active_sleep(2.8, capture_device, current_frame, "THROWING_POKEMON", roi_color, mode="WILD")
             roi_color = (255, 100, 0)
             if esp and not TEST_MODE:
-                current_frame = active_sleep(1, capture_device, current_frame, "ESCAPING", roi_color)
+                current_frame = active_sleep(1, capture_device, current_frame, "ESCAPING", roi_color, mode="WILD")
                 esp.write(b'r')
                 esp.write(b'd')
                 esp.write(b'A')
-                current_frame = active_sleep(1, capture_device, current_frame, "KOCHAM_ALE", roi_color)
+                current_frame = active_sleep(2, capture_device, current_frame, "KOCHAM_ALE", roi_color, mode="WILD")
                 esp.write(b'A')
-                # Czekamy na animację ucieczki i załadowanie mapy
-                current_frame = active_sleep(2, capture_device, current_frame, "ESCAPE_WAIT", roi_color)
-
+                current_frame = active_sleep(4, capture_device, current_frame, "ESCAPE_WAIT", roi_color, mode="WILD")
             state = "SPINNING"
 
         elif state == "SHINY_FOUND":

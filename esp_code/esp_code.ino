@@ -19,7 +19,7 @@ void releaseJoystick() {
 }
 
 void tapRigid(char dir) {
-    int holdTime = 100; 
+    int holdTime = 50;
     if (dir == 'L') {
         pinMode(pinJoyX, OUTPUT);
         digitalWrite(pinJoyX, HIGH); 
