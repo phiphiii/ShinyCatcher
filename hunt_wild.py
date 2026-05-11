@@ -32,22 +32,21 @@ def run(capture_device, esp, encounters, shiny_found):
         if state == "SPINNING":
             roi_color = (0, 0, 255)
             if esp and not utils.TEST_MODE:
-                """
-                current_frame = utils.active_sleep(0.35, capture_device, current_frame, "SPINNING", roi_color, break_on_black=True, mode="WILD")
-                esp.write(b'l')
-                esp.write(b'u')
-                esp.write(b'r')
-                esp.write(b'd')
-                """
-                esp.write(b'l')
-                # Wait for walking animation to finish. Break instantly if battle starts.
-                current_frame = utils.active_sleep(0.6, capture_device, current_frame, "STEP_LEFT", roi_color, break_on_black=True, mode="WILD")
+                # Custom micro-tap (approx 50ms) to force ONLY a turn, preventing a full step
+                esp.write(b'L')
+                time.sleep(0.05)
+                esp.write(b'C')
 
-                # If battle hasn't started, take one step right back to the original spot
+                # Shorter wait for faster spinning
+                current_frame = utils.active_sleep(0.25, capture_device, current_frame, "TURN_LEFT", roi_color,
+                                                   break_on_black=True, mode="WILD")
+
                 if not utils.detect_black_screen(current_frame):
-                    esp.write(b'r')
-                    current_frame = utils.active_sleep(0.6, capture_device, current_frame, "STEP_RIGHT", roi_color, break_on_black=True, mode="WILD")
-
+                    esp.write(b'R')
+                    time.sleep(0.05)
+                    esp.write(b'C')
+                    current_frame = utils.active_sleep(0.25, capture_device, current_frame, "TURN_RIGHT", roi_color,
+                                                       break_on_black=True, mode="WILD")
 
             if utils.detect_black_screen(current_frame):
                 state = "CHECKING_WILD_SHINY"
