@@ -3,3 +3,4 @@
 opencv-python==4.13.0.92
 numpy==2.4.4
 pyserial==3.5.0
+PyQt6==6.5.0

@@ -1,0 +1,14 @@
+{
+    "keybinds": {
+        "move_up": "W",
+        "move_down": "S",
+        "move_left": "A",
+        "move_right": "D",
+        "btn_x": "I",
+        "btn_y": "J",
+        "btn_b": "K",
+        "btn_a": "L",
+        "btn_start": "Q",
+        "btn_home": "H"
+    }
+}
